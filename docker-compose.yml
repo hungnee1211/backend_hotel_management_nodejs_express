@@ -1,0 +1,35 @@
+# Single-node MongoDB replica set for local development (required for transactions).
+services:
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: >
+        echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}) }" |
+        mongosh --port 27017 --quiet
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  # Optional: run the API itself in Docker too (`docker compose --profile app up --build`).
+  # Create .env first; the connection string below overrides MONGODB_URI to reach the mongo service.
+  api:
+    profiles: ["app"]
+    build: .
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/hotel_management?replicaSet=rs0&directConnection=true
+      NODE_ENV: production
+    ports:
+      - "5000:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+volumes:
+  mongo-data:

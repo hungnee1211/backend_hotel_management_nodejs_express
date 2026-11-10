@@ -1,0 +1,32 @@
+import { Router } from 'express';
+import Joi from 'joi';
+import { BOOKING_SOURCE, BOOKING_STATUS } from '../../constants/index.js';
+import { PERMISSIONS as P } from '../../constants/permissions.js';
+import { authenticate } from '../../middlewares/authenticate.js';
+import { authorizeAnyPermission, authorizePermissions } from '../../middlewares/authorize.js';
+import { validate } from '../../middlewares/validate.js';
+import { handle } from '../../utils/handler.js';
+import { idParams, objectId, pagination } from '../../utils/joi-rules.js';
+import { getRequestContext as ctx } from '../../utils/requestContext.js';
+import { bookingService as svc } from './booking.service.js';
+import { stayService } from './stay.service.js';
+
+const router = Router();
+router.use(authenticate);
+const caller = (req) => ({ user: req.user, permissions: req.permissions });
+const key = Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).messages({ 'string.pattern.base': 'must be YYYY-MM-DD' });
+const stay = { checkInDate: key, checkOutDate: key, adults: Joi.number().integer().min(1).max(40), children: Joi.number().integer().min(0).max(40), specialRequests: Joi.string().trim().max(1000).allow('') };
+const anyBooking = authorizeAnyPermission(P.BOOKING_READ_OWN, P.BOOKING_READ_ALL);
+const front = authorizePermissions(P.BOOKING_CHECKIN_CHECKOUT);
+
+router.post('/', authorizeAnyPermission(P.BOOKING_CREATE_OWN, P.BOOKING_CREATE_FOR_GUEST), validate({ body: Joi.object({ ...stay, checkInDate: key.required(), checkOutDate: key.required(), adults: stay.adults.required(), rooms: Joi.array().items(objectId).min(1).max(20).required(), guestIds: Joi.array().items(objectId).max(20), customerId: objectId, source: Joi.string().valid(...Object.values(BOOKING_SOURCE)) }) }), handle((req) => svc.create(caller(req), req.body, ctx(req)), { status: 201, message: 'Booking created' }));
+router.get('/', anyBooking, validate({ query: Joi.object({ ...pagination, status: Joi.string().valid(...Object.values(BOOKING_STATUS)), customerId: objectId, roomId: objectId, from: key, to: key, sortBy: Joi.string().valid('createdAt', 'checkInDate') }) }), handle((req) => svc.list(caller(req), req.query)));
+router.get('/:id', anyBooking, validate({ params: idParams }), handle((req) => svc.get(caller(req), req.params.id)));
+router.patch('/:id', anyBooking, validate({ params: idParams, body: Joi.object({ ...stay, rooms: Joi.array().items(objectId).min(1).max(20) }).min(1) }), handle((req) => svc.modify(caller(req), req.params.id, req.body, ctx(req)), { message: 'Booking updated' }));
+router.post('/:id/cancel', anyBooking, validate({ params: idParams, body: Joi.object({ reason: Joi.string().trim().min(3).max(300).required(), waivePenalty: Joi.boolean() }) }), handle((req) => svc.cancel(caller(req), req.params.id, req.body, ctx(req)), { message: 'Booking cancelled' }));
+router.post('/:id/confirm', authorizePermissions(P.BOOKING_MANAGE), validate({ params: idParams }), handle((req) => svc.confirm(caller(req), req.params.id, ctx(req)), { message: 'Booking confirmed' }));
+router.post('/:id/no-show', authorizePermissions(P.BOOKING_MANAGE), validate({ params: idParams }), handle((req) => svc.markNoShow(caller(req), req.params.id, ctx(req)), { message: 'Booking marked as no-show' }));
+router.post('/:id/check-in', front, validate({ params: idParams }), handle((req) => stayService.checkIn(caller(req), req.params.id, ctx(req)), { message: 'Checked in' }));
+router.post('/:id/check-out', front, validate({ params: idParams, body: Joi.object({ authorizeOutstanding: Joi.boolean(), reason: Joi.string().trim().max(300) }) }), handle((req) => stayService.checkOut(caller(req), req.params.id, req.body, ctx(req)), { message: 'Checked out' }));
+router.post('/:id/extend', front, validate({ params: idParams, body: Joi.object({ newCheckOutDate: key.required() }) }), handle((req) => stayService.extend(caller(req), req.params.id, req.body, ctx(req)), { message: 'Stay extended' }));
+export default router;
